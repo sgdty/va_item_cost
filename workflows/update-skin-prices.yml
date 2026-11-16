@@ -1,0 +1,41 @@
+name: Auto Update Valorant Skin VP Prices
+
+on:
+  schedule:
+    # 每天北京时间 12:00 (UTC 04:00) 自动运行一次
+    - cron: "0 4 * * *"
+  workflow_dispatch: # 支持在 GitHub 页面手动点击触发
+
+permissions:
+  contents: write
+
+jobs:
+  update-prices:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Fetch latest skin VP prices
+        run: |
+          # 1. 生成极简版（仅特殊价格皮肤，省略常规商店皮肤、通行证及免费皮肤）
+          python3 fetch_skin_prices.py -o skin_vp_prices.min.json --only-special-vp --minify
+          # 2. 生成带通行证标记(-1)与免费标记(0)的精简版
+          python3 fetch_skin_prices.py -o skin_vp_prices.json --omit-standard --bp-value -1 --free-value 0
+
+      - name: Commit and push if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add skin_vp_prices.min.json skin_vp_prices.json
+          if git diff --staged --quiet; then
+            echo "No skin price changes detected."
+          else
+            git commit -m "chore(data): auto-update Valorant skin VP prices"
+            git push
+          fi
