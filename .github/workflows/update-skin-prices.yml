@@ -4,38 +4,107 @@ on:
   schedule:
     # 每天北京时间 12:00 (UTC 04:00) 自动运行一次
     - cron: "0 4 * * *"
-  workflow_dispatch: # 支持在 GitHub 页面手动点击触发
+  workflow_dispatch:
+    inputs:
+      force_commit:
+        description: "即使价格无变化也强制提交更新记录"
+        required: false
+        default: false
+        type: boolean
+  push:
+    branches:
+      - main
+    paths:
+      - "fetch_skin_prices.py"
 
 permissions:
   contents: write
 
+concurrency:
+  group: update-valorant-skin-prices
+  cancel-in-progress: true
+
 jobs:
   update-prices:
+    name: Fetch & Update Skin VP JSONs
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Fetch latest skin VP prices
+      - name: Run scraper to generate or update JSON files
         run: |
-          # 1. 生成极简版（仅特殊价格皮肤，省略常规商店皮肤、通行证及免费皮肤）
+          # 1. 极简版：仅特殊价格商店皮肤（省略常规商店皮、通行证及免费皮）
           python3 fetch_skin_prices.py -o skin_vp_prices.min.json --only-special-vp --minify
-          # 2. 生成带通行证标记(-1)与免费标记(0)的精简版
+
+          # 2. 极限压缩版：连符合所属套装 2 倍价格的常规近战武器也一并省略
+          python3 fetch_skin_prices.py -o skin_vp_prices.ultra.min.json --only-special-vp --strict-theme-melee --minify
+
+          # 3. 精简版（含通行证 -1 与免费皮 0 标记）
           python3 fetch_skin_prices.py -o skin_vp_prices.json --omit-standard --bp-value -1 --free-value 0
 
-      - name: Commit and push if changed
+          # 4. 全量商店皮肤版（含常规商店皮，省略通行证与免费皮）
+          python3 fetch_skin_prices.py -o skin_vp_prices_store_all.json --include-standard --omit-bp --omit-free --minify
+
+      - name: Validate generated JSON files & write Job Summary
+        run: |
+          python3 - << 'EOF'
+          import json
+          import os
+          from pathlib import Path
+
+          files = [
+              "skin_vp_prices.min.json",
+              "skin_vp_prices.ultra.min.json",
+              "skin_vp_prices.json",
+              "skin_vp_prices_store_all.json",
+          ]
+          summary_lines = [
+              "### Valorant Skin VP Prices Update Summary",
+              "",
+              "| File | Entries | Size |",
+              "| :--- | ---: | ---: |",
+          ]
+          for fn in files:
+              p = Path(fn)
+              assert p.exists() and p.stat().st_size > 10, f"Invalid or empty file: {fn}"
+              data = json.loads(p.read_text(encoding="utf-8"))
+              assert isinstance(data, dict) and len(data) > 0, f"Empty JSON object in {fn}"
+              summary_lines.append(f"| `{fn}` | {len(data)} | {p.stat().st_size / 1024:.1f} KB |")
+
+          summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary_path:
+              with open(summary_path, "a", encoding="utf-8") as f:
+                  f.write("\n".join(summary_lines) + "\n")
+          EOF
+
+      - name: Commit and push generated/updated JSON files to GitHub
+        env:
+          FORCE_COMMIT: ${{ github.event.inputs.force_commit || 'false' }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add skin_vp_prices.min.json skin_vp_prices.json
-          if git diff --staged --quiet; then
-            echo "No skin price changes detected."
+
+          git add -f skin_vp_prices.min.json skin_vp_prices.ultra.min.json skin_vp_prices.json skin_vp_prices_store_all.json
+
+          UPDATED_DATE=$(date -u +"%Y-%m-%d %H:%M UTC")
+          if ! git diff --staged --quiet; then
+            git commit -m "chore(data): auto-update Valorant skin VP prices (${UPDATED_DATE})"
+            git pull --rebase origin main
+            git push origin HEAD:main
+            echo "🚀 检测到数据新增或变更，已自动生成并更新 GitHub 仓库中的 JSON 文件！"
+          elif [ "$FORCE_COMMIT" = "true" ]; then
+            git commit --allow-empty -m "chore(data): verify Valorant skin VP prices (${UPDATED_DATE})"
+            git pull --rebase origin main
+            git push origin HEAD:main
+            echo "✅ 已强制提交最新验证记录。"
           else
-            git commit -m "chore(data): auto-update Valorant skin VP prices"
-            git push
+            echo "✅ 当前仓库中的 JSON 文件已是最新状态，无需重复产生空 Commit。"
           fi
