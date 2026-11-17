@@ -17,17 +17,21 @@ Valorant 武器皮肤 VP 价值自动抓取与维护脚本
    - `--omit-free`: 控制是否省略特工契约/免费皮肤
    - `--only-special-vp`: 仅保留特殊 VP 定价的商店皮肤（同时省略常规商店皮 + 通行证皮 + 免费皮，体积最小）
    - `--strict-theme-melee`: 将符合同系列枪械 2 倍价格的常规近战武器也视为常规皮肤省略
+4. 支持增量对比与 Discord Webhook 消息通知：
+   - 当检测到输出 JSON 内容有更新时，自动向指定的 Discord Webhook 推送更新详情。
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import ssl
 import subprocess
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -109,6 +113,111 @@ def fetch_json(url: str, cache_file: Path | None = None) -> dict[str, Any]:
         check=True,
     )
     return json.loads(res.stdout)
+
+
+def send_discord_notification(
+    webhook_url: str,
+    file_name: str,
+    file_size_kb: float,
+    total_records: int,
+    stats: dict[str, Any],
+    diff_info: dict[str, Any],
+    skin_name_lookup: dict[str, str],
+) -> None:
+    """当 JSON 数据发生更新时，向 Discord Webhook 发送 Embed 卡片通知"""
+    added = diff_info["added"]
+    changed = diff_info["changed"]
+    removed = diff_info["removed"]
+
+    detail_lines: list[str] = []
+    for uid, val in list(added.items())[:10]:
+        sname = skin_name_lookup.get(uid, uid)
+        detail_lines.append(f"➕ **{sname}** (`{uid[:8]}...`): `{val}`")
+    for uid, (old_v, new_v) in list(changed.items())[:10]:
+        sname = skin_name_lookup.get(uid, uid)
+        detail_lines.append(f"🔄 **{sname}** (`{uid[:8]}...`): `{old_v}` → `{new_v}`")
+    for uid in list(removed.keys())[:5]:
+        sname = skin_name_lookup.get(uid, uid)
+        detail_lines.append(f"➖ **{sname}** (`{uid[:8]}...`)")
+
+    if len(added) + len(changed) + len(removed) > len(detail_lines):
+        remaining = (len(added) + len(changed) + len(removed)) - len(detail_lines)
+        detail_lines.append(f"... 以及其余 **{remaining}** 项变更")
+
+    changes_text = "\n".join(detail_lines) if detail_lines else "文件格式或内容已更新"
+
+    payload = {
+        "username": "Valorant Skin Price Bot",
+        "embeds": [
+            {
+                "title": f"🔔 Valorant 皮肤 VP 价格数据已更新 (`{file_name}`)",
+                "color": 0xFF4655,
+                "fields": [
+                    {
+                        "name": "📊 变更统计",
+                        "value": (
+                            f"新增: **{len(added)}** | "
+                            f"修改: **{len(changed)}** | "
+                            f"移除: **{len(removed)}**"
+                        ),
+                        "inline": True,
+                    },
+                    {
+                        "name": "📁 文件信息",
+                        "value": f"记录数: **{total_records}** 条 (`{file_size_kb:.1f} KB`)",
+                        "inline": True,
+                    },
+                    {
+                        "name": "📦 分类汇总",
+                        "value": (
+                            f"特殊价皮肤: `{stats['special_priced_skins_recorded']}` | "
+                            f"常规商店皮(存/略): `{stats['standard_store_skins_recorded']}/{stats['standard_store_skins_omitted']}` | "
+                            f"通行证(存/略): `{stats['battlepass_skins_recorded']}/{stats['battlepass_skins_omitted']}`"
+                        ),
+                        "inline": False,
+                    },
+                    {
+                        "name": "📝 变更明细预览",
+                        "value": changes_text[:1024],
+                        "inline": False,
+                    },
+                ],
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+        ],
+    }
+
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "ValorantSkinPriceBot/1.0",
+    }
+    req = urllib.request.Request(webhook_url, data=body, headers=headers, method="POST")
+
+    try:
+        unverified_ctx = ssl._create_unverified_context()
+        with urllib.request.urlopen(req, timeout=15, context=unverified_ctx) as resp:
+            if resp.status in (200, 204):
+                print("📨 已成功向 Discord 频道发送更新通知！")
+                return
+    except Exception:
+        pass
+
+    subprocess.run(
+        [
+            "curl",
+            "-sSL",
+            "-X",
+            "POST",
+            "-H",
+            "Content-Type: application/json",
+            "-d",
+            body.decode("utf-8"),
+            webhook_url,
+        ],
+        check=False,
+    )
+    print("📨 已通过 curl 向 Discord 频道发送更新通知！")
 
 
 def fetch_wiki_template(template_name: str, cache_file: Path | None = None) -> str:
@@ -357,6 +466,20 @@ def build_skin_price_map(
     return result_map, stats
 
 
+def compute_diff(
+    old_map: dict[str, Any], new_map: dict[str, Any]
+) -> dict[str, dict[str, Any]]:
+    """计算新旧 JSON 数据的增删改差异"""
+    added = {k: v for k, v in new_map.items() if k not in old_map}
+    removed = {k: v for k, v in old_map.items() if k not in new_map}
+    changed = {
+        k: (old_map[k], new_map[k])
+        for k in new_map
+        if k in old_map and old_map[k] != new_map[k]
+    }
+    return {"added": added, "removed": removed, "changed": changed}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="抓取并生成 Valorant 武器皮肤 VP 价值 JSON 文件（支持按需过滤常规皮肤、通行证及免费皮肤）"
@@ -423,6 +546,16 @@ def main() -> None:
         "--minify",
         action="store_true",
         help="输出单行无空格的最小化 JSON",
+    )
+    parser.add_argument(
+        "--discord-webhook",
+        default=os.environ.get("DISCORD_WEBHOOK_URL", ""),
+        help="可选：Discord Webhook URL（默认从环境变量 DISCORD_WEBHOOK_URL 读取），仅在内容有更新时发送通知",
+    )
+    parser.add_argument(
+        "--no-discord",
+        action="store_true",
+        help="禁用 Discord Webhook 通知",
     )
     parser.add_argument(
         "--cache-dir",
@@ -495,6 +628,21 @@ def main() -> None:
     )
 
     out_path = Path(args.output)
+    old_map: dict[str, Any] = {}
+    if out_path.exists():
+        try:
+            old_map = json.loads(out_path.read_text(encoding="utf-8"))
+        except Exception:
+            old_map = {}
+
+    diff_info = compute_diff(old_map, result_map)
+    has_changes = bool(
+        not out_path.exists()
+        or diff_info["added"]
+        or diff_info["changed"]
+        or diff_info["removed"]
+    )
+
     out_path.parent.mkdir(parents=True, exist_ok=True)
     json_kwargs: dict[str, Any] = {"ensure_ascii": False, "sort_keys": True}
     if args.minify:
@@ -503,8 +651,9 @@ def main() -> None:
         json_kwargs["indent"] = 2
 
     out_path.write_text(json.dumps(result_map, **json_kwargs) + "\n", encoding="utf-8")
+    file_size_kb = out_path.stat().st_size / 1024
 
-    print(f"\n✅ 生成完成！文件已保存至: {out_path.resolve()} ({out_path.stat().st_size / 1024:.1f} KB, 共 {len(result_map)} 条记录)")
+    print(f"\n✅ 生成完成！文件已保存至: {out_path.resolve()} ({file_size_kb:.1f} KB, 共 {len(result_map)} 条记录)")
     print(f"   - API 皮肤总数: {stats['total_api_skins']} (过滤原皮/随机项: {stats['skipped_default_or_random']})")
     print(
         f"   - 常规价商店皮肤: 省略 {stats['standard_store_skins_omitted']} 个 / 记录 {stats['standard_store_skins_recorded']} 个"
@@ -516,6 +665,18 @@ def main() -> None:
     print(
         f"   - 免费/契约皮肤:  省略 {stats['free_gear_skins_omitted']} 个 / 记录 {stats['free_gear_skins_recorded']} 个"
     )
+
+    if not args.no_discord and args.discord_webhook and has_changes:
+        skin_name_lookup = {s["uuid"]: s.get("displayName", s["uuid"]) for s in skins_data if "uuid" in s}
+        send_discord_notification(
+            webhook_url=args.discord_webhook,
+            file_name=out_path.name,
+            file_size_kb=file_size_kb,
+            total_records=len(result_map),
+            stats=stats,
+            diff_info=diff_info,
+            skin_name_lookup=skin_name_lookup,
+        )
 
 
 if __name__ == "__main__":
