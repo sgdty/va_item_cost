@@ -3,7 +3,9 @@ name: Auto Update Valorant Skin VP Prices
 on:
   schedule:
     # 每天北京时间 12:00 (UTC 04:00) 自动运行一次
-    - cron: "0 4 * * *"
+    # - cron: "0 4 * * *"
+    # UTC 时间每周三 02:00 执行（对应北京时间每周三上午 10:00）
+    - cron: '0 2 * * 3'
   workflow_dispatch:
     inputs:
       force_commit:
