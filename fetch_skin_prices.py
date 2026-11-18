@@ -407,13 +407,14 @@ def build_skin_price_map(
                 stats["free_gear_skins_recorded"] += 1
             continue
 
-        # 2. 匹配通行证皮肤 (在 Wiki BP 表中，或者无商城捆绑包的 Select/Deluxe 单级皮肤系列)
+        # 2. 匹配通行证皮肤 (在 Wiki BP 表中，或者无商城捆绑包的 Select/Deluxe 系列皮肤与近战武器)
+        effective_tier = theme_gun_tiers.get(theme_uuid, tier_uuid)
         is_bp = (
             norm_name in bp_skins
             or (theme_uuid in bp_theme_uuids and theme_uuid not in store_theme_uuids)
             or (
                 theme_uuid not in store_theme_uuids
-                and tier_uuid in (SELECT_TIER, DELUXE_TIER)
+                and effective_tier in (SELECT_TIER, DELUXE_TIER)
                 and len(skin.get("levels", [])) == 1
                 and skin.get("wallpaper") is None
             )
@@ -523,6 +524,11 @@ def main() -> None:
         action="store_true",
         help="极限精简模式：等价于同时开启 --omit-standard --omit-bp --omit-free，只保留特殊 VP 定价的商店皮肤",
     )
+    parser.add_argument(
+        "--only-store-vp",
+        action="store_true",
+        help="全量商店皮肤模式：等价于同时开启 --include-standard --omit-bp --omit-free，包含所有特殊定价与普通常规定价的商店皮肤，不包含通行证与任何免费皮肤",
+    )
 
     # 近战武器常规价判定模式
     parser.add_argument(
@@ -564,9 +570,12 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    omit_standard = True if args.only_special_vp else args.omit_standard
-    omit_bp = True if args.only_special_vp else args.omit_bp
-    omit_free = True if args.only_special_vp else args.omit_free
+    if args.only_special_vp:
+        omit_standard, omit_bp, omit_free = True, True, True
+    elif args.only_store_vp:
+        omit_standard, omit_bp, omit_free = False, True, True
+    else:
+        omit_standard, omit_bp, omit_free = args.omit_standard, args.omit_bp, args.omit_free
 
     bp_marker: int | str = int(args.bp_value) if args.bp_value.lstrip("-").isdigit() else args.bp_value
     free_marker: int | str = int(args.free_value) if args.free_value.lstrip("-").isdigit() else args.free_value
