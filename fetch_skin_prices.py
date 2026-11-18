@@ -317,8 +317,8 @@ def build_skin_price_map(
     bp_skins: set[str],
     bp_collections: set[str],
     free_skins: set[str],
-    bp_marker: str | int = "BP",
-    free_marker: str | int = "FREE",
+    bp_marker: int | str = -1,
+    free_marker: int | str = 0,
     omit_standard: bool = True,
     omit_bp: bool = False,
     omit_free: bool = False,
@@ -540,13 +540,13 @@ def main() -> None:
     # 标记值与格式控制
     parser.add_argument(
         "--bp-value",
-        default="BP",
-        help="当保留通行证皮肤时，在 JSON 中的标记值 (默认: 'BP'，也可设为 '-1' 或 '0')",
+        default="-1",
+        help="当保留通行证皮肤时，在 JSON 中的价格标记值 (默认: -1)",
     )
     parser.add_argument(
         "--free-value",
-        default="FREE",
-        help="当保留免费/契约皮肤时，在 JSON 中的标记值 (默认: 'FREE'，也可设为 '0')",
+        default="0",
+        help="当保留免费/契约皮肤时，在 JSON 中的价格标记值 (默认: 0)",
     )
     parser.add_argument(
         "--minify",
