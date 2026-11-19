@@ -551,7 +551,14 @@ def main() -> None:
     parser.add_argument(
         "--minify",
         action="store_true",
-        help="输出单行无空格的最小化 JSON",
+        default=True,
+        help="输出单行无空格的最小化 JSON (默认开启)",
+    )
+    parser.add_argument(
+        "--pretty",
+        dest="minify",
+        action="store_false",
+        help="输出带缩进与换行的格式化 JSON",
     )
     parser.add_argument(
         "--discord-webhook",
@@ -656,10 +663,10 @@ def main() -> None:
     json_kwargs: dict[str, Any] = {"ensure_ascii": False, "sort_keys": True}
     if args.minify:
         json_kwargs["separators"] = (",", ":")
+        out_path.write_text(json.dumps(result_map, **json_kwargs), encoding="utf-8")
     else:
         json_kwargs["indent"] = 2
-
-    out_path.write_text(json.dumps(result_map, **json_kwargs) + "\n", encoding="utf-8")
+        out_path.write_text(json.dumps(result_map, **json_kwargs) + "\n", encoding="utf-8")
     file_size_kb = out_path.stat().st_size / 1024
 
     print(f"\n✅ 生成完成！文件已保存至: {out_path.resolve()} ({file_size_kb:.1f} KB, 共 {len(result_map)} 条记录)")
